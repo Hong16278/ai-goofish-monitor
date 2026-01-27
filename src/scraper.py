@@ -280,6 +280,42 @@ async def scrape_user_profile(context, user_id: str) -> dict:
     return profile_data
 
 
+def is_worth_analyzing(item_data: dict, user_profile: dict) -> tuple[bool, str]:
+    """
+    本地规则过滤器：在调用昂贵的AI之前，先过滤掉明显的垃圾商品。
+    返回: (是否值得分析, 原因)
+    """
+    title = item_data.get('商品标题', '')
+    desc = item_data.get('商品描述', '') # 注意：目前 item_data 可能还没包含描述，如果详情页没解析的话
+    # 实际上 scraper.py 里的 item_data 似乎是从列表页来的，详情页解析后会更新
+    # 让我们检查一下 item_data 是否包含描述。详情页解析代码在 line 706 左右，
+    # 但原代码似乎没有显式提取 desc 并放入 item_data？
+    # 让我们再检查一下 scraper.py 的 item_data 更新逻辑。
+    
+    # 负面关键词列表
+    negative_keywords = ["回收", "求购", "坏", "故障", "尸体", "配件", "拆机", "大量", "批发"]
+    
+    # 1. 检查标题
+    for kw in negative_keywords:
+        if kw in title:
+            return False, f"标题包含负面关键词: {kw}"
+            
+    # 2. 检查卖家信用 (如果能获取到)
+    credit = user_profile.get('卖家信用等级', '')
+    if '差' in credit or '低' in credit:
+        return False, f"卖家信用过低: {credit}"
+        
+    # 3. 检查“想要”人数 (如果过高可能是商家或传家宝)
+    try:
+        want_cnt = int(item_data.get('“想要”人数', 0))
+        if want_cnt > 2000:
+            return False, f"想要人数过多({want_cnt})，疑似商家或旧帖"
+    except:
+        pass
+
+    return True, ""
+
+
 async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     """
     【核心执行器】
@@ -753,8 +789,15 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 # --- START: Real-time AI Analysis & Notification ---
                                 from src.config import SKIP_AI_ANALYSIS
 
+                                # --- PRE-AI FILTER ---
+                                should_analyze, skip_reason = is_worth_analyzing(item_data, user_profile_data)
+                                
+                                if not should_analyze:
+                                    log_time(f"商品被本地规则过滤，跳过AI分析。原因: {skip_reason}")
+                                    final_record['ai_analysis'] = {'skipped': True, 'reason': skip_reason}
+                                
                                 # 检查是否跳过AI分析并直接发送通知
-                                if SKIP_AI_ANALYSIS:
+                                elif SKIP_AI_ANALYSIS:
                                     log_time("环境变量 SKIP_AI_ANALYSIS 已设置，跳过AI分析并直接发送通知...")
                                     # 下载图片
                                     image_urls = item_data.get('商品图片列表', [])
@@ -782,8 +825,33 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                     ai_analysis_result = None
                                     if ai_prompt_text:
                                         try:
-                                            # 注意：这里我们将整个记录传给AI，让它拥有最全的上下文
-                                            ai_analysis_result = await get_ai_analysis(final_record, downloaded_image_paths, prompt_text=ai_prompt_text)
+                                            # --- OPTIMIZATION: Construct a lightweight record for AI to save tokens ---
+                                            import copy
+                                            ai_record = copy.deepcopy(final_record)
+                                            
+                                            # Trim seller items list (keep only top 5)
+                                            if '卖家信息' in ai_record and '卖家发布的商品列表' in ai_record['卖家信息']:
+                                                full_items = ai_record['卖家信息']['卖家发布的商品列表']
+                                                if isinstance(full_items, list) and len(full_items) > 5:
+                                                    ai_record['卖家信息']['卖家发布的商品列表'] = full_items[:5]
+                                                    ai_record['卖家信息']['_note_items'] = f"List truncated for AI. Total items: {len(full_items)}"
+                                            
+                                            # Trim seller ratings list (keep only top 5)
+                                            if '卖家信息' in ai_record and '卖家收到的评价列表' in ai_record['卖家信息']:
+                                                full_ratings = ai_record['卖家信息']['卖家收到的评价列表']
+                                                if isinstance(full_ratings, list) and len(full_ratings) > 5:
+                                                    ai_record['卖家信息']['卖家收到的评价列表'] = full_ratings[:5]
+                                                    ai_record['卖家信息']['_note_ratings'] = f"List truncated for AI. Total ratings: {len(full_ratings)}"
+
+                                            # Limit images sent to AI (e.g., max 2 images to save tokens)
+                                            # Usually main image + 1 detail image is enough for initial screening
+                                            images_to_send = downloaded_image_paths[:2] if downloaded_image_paths else []
+                                            
+                                            log_time(f"AI请求优化: 仅发送前 {len(images_to_send)} 张图片和前5条卖家历史记录。")
+
+                                            # Use ai_record instead of final_record
+                                            ai_analysis_result = await get_ai_analysis(ai_record, images_to_send, prompt_text=ai_prompt_text)
+                                            
                                             if ai_analysis_result:
                                                 final_record['ai_analysis'] = ai_analysis_result
                                                 log_time(f"AI分析完成。推荐状态: {ai_analysis_result.get('is_recommended')}")
@@ -800,7 +868,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                         try:
                                             if os.path.exists(img_path):
                                                 os.remove(img_path)
-                                                print(f"   [图片] 已删除临时图片文件: {img_path}")
+                                                # print(f"   [图片] 已删除临时图片文件: {img_path}") # 减少日志噪音
                                         except Exception as e:
                                             print(f"   [图片] 删除图片文件时出错: {e}")
 

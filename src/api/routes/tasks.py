@@ -28,9 +28,28 @@ async def _reload_scheduler_if_needed(
 @router.get("", response_model=List[dict])
 async def get_tasks(
     service: TaskService = Depends(get_task_service),
+    process_service: ProcessService = Depends(get_process_service),
 ):
     """获取所有任务"""
     tasks = await service.get_all_tasks()
+    
+    # 同步进程状态
+    for task in tasks:
+        # process_service.is_running 是最权威的来源
+        if process_service.is_running(task.id):
+            task.is_running = True
+        else:
+            # 如果进程没在运行，但 DB 说在运行，说明状态不一致（可能是进程意外退出）
+            if task.is_running:
+                # 只有当 DB 说在运行但实际没运行时，我们才修正为 False
+                # 注意：如果进程刚启动还没来得及注册到 process_service（不太可能，因为是单线程），
+                # 或者 process_service 重启了丢失了进程信息，这里会把状态重置为 False。
+                # 由于 app 启动时已经重置了所有 status 为 False，所以这里主要是处理
+                # 运行时进程崩溃的情况。
+                task.is_running = False
+                # 可以在这里异步更新 DB，但为了响应速度，暂时只更新返回结果
+                # await service.update_task_status(task.id, False) 
+                
     return [task.dict() for task in tasks]
 
 
@@ -38,11 +57,19 @@ async def get_tasks(
 async def get_task(
     task_id: int,
     service: TaskService = Depends(get_task_service),
+    process_service: ProcessService = Depends(get_process_service),
 ):
     """获取单个任务"""
     task = await service.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务未找到")
+    
+    # 同步状态
+    if process_service.is_running(task.id):
+        task.is_running = True
+    elif task.is_running:
+        task.is_running = False
+        
     return task.dict()
 
 

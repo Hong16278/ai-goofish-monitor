@@ -8,6 +8,7 @@ import os
 import signal
 from datetime import datetime
 from typing import Dict
+import contextlib
 from src.utils import build_task_log_path
 
 
@@ -17,6 +18,66 @@ class ProcessService:
     def __init__(self):
         self.processes: Dict[int, asyncio.subprocess.Process] = {}
         self.log_paths: Dict[int, str] = {}
+
+    def get_external_scraper_count(self) -> int:
+        """
+        检查是否有在外部（非本服务启动）运行的 spider_v2.py 进程。
+        返回检测到的外部进程数量。
+        """
+        count = 0
+        
+        # 方案1：尝试导入 psutil (最准确)
+        try:
+            import psutil
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    cmdline = proc.info['cmdline']
+                    if cmdline and 'python' in proc.info['name'] and 'spider_v2.py' in ' '.join(cmdline):
+                        is_managed = False
+                        for p in self.processes.values():
+                            if p.pid == proc.info['pid']:
+                                is_managed = True
+                                break
+                        if not is_managed:
+                            count += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            return count
+        except ImportError:
+            pass
+
+        # 方案2：Windows fallback (wmic)
+        if sys.platform == "win32":
+            try:
+                import subprocess
+                # 获取命令行和PID
+                output = subprocess.check_output(
+                    'wmic process where "name=\'python.exe\'" get commandline,processid',
+                    shell=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                
+                # wmic output format: CommandLine  ProcessId
+                lines = output.strip().splitlines()
+                if len(lines) > 1: # Header exists
+                    for line in lines[1:]:
+                        if "spider_v2.py" in line:
+                            # 提取PID (最后一部分是PID)
+                            parts = line.rsplit(None, 1)
+                            if len(parts) == 2 and parts[1].isdigit():
+                                pid = int(parts[1])
+                                is_managed = False
+                                for p in self.processes.values():
+                                    if p.pid == pid:
+                                        is_managed = True
+                                        break
+                                if not is_managed:
+                                    count += 1
+            except Exception:
+                pass
+            
+        return count
 
     def is_running(self, task_id: int) -> bool:
         """检查任务是否正在运行"""
