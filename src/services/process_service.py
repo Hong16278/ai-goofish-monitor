@@ -40,10 +40,10 @@ class ProcessService:
                                 break
                         if not is_managed:
                             count += 1
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                except Exception:
                     pass
             return count
-        except ImportError:
+        except Exception:
             pass
 
         # 方案2：Windows fallback (wmic)

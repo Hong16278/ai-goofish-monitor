@@ -16,4 +16,3 @@ qrcode
 pytest
 pytest-asyncio
 coverage
-apprise

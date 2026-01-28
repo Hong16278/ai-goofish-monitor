@@ -172,19 +172,14 @@ async def get_system_status(
         for task_id, process in process_service.processes.items()
         if process and process.returncode is None
     ]
-    
-    # 检查外部运行的爬虫进程
-    external_scraper_count = process_service.get_external_scraper_count()
-    is_running = len(running_task_ids) > 0 or external_scraper_count > 0
 
     return {
         "ai_configured": ai_settings.is_configured(),
         "notification_configured": notification_settings.has_any_notification_enabled(),
         "headless_mode": scraper_settings.run_headless,
         "running_in_docker": scraper_settings.running_in_docker,
-        "scraper_running": is_running,
+        "scraper_running": len(running_task_ids) > 0,
         "running_task_ids": running_task_ids,
-        "external_scraper_count": external_scraper_count,
         "login_state_file": {
             "exists": login_state_exists,
             "path": state_file

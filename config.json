@@ -3,7 +3,7 @@
     "task_name": "OPPO Find X8 捡漏王",
     "enabled": true,
     "keyword": "OPPO Find X8 16 512",
-    "description": "请帮我判断这款手机是否为 \"OPPO Find X8\"，配置是否为 \"16G+512G\"。\n如果标题或描述中包含 \"已出\"、\"仅展示\"、\"屏幕碎\"、\"有锁\"、\"ID锁\"、\"尸体机\" 等字眼，请直接拒绝。\n如果是正常能用的机器，请推荐。",
+    "description": "请帮我判断这款手机是否为 \"OPPO Find X8\"，配置是否为 \"16G+512G\"。\n如果标题或描述中包含 \"已出\"、\"划痕\"、\"仅展示\"、\"屏幕碎\"、\"有锁\"、\"ID锁\"、\"尸体机\" 等字眼，请直接拒绝。\n如果是正常能用的机器，请推荐。",
     "max_pages": 3,
     "personal_only": true,
     "min_price": "1000",
@@ -15,6 +15,6 @@
     "free_shipping": false,
     "new_publish_option": "",
     "region": "",
-    "is_running": true
+    "is_running": false
   }
 ]

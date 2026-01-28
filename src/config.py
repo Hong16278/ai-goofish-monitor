@@ -25,7 +25,6 @@ API_KEY = os.getenv("OPENAI_API_KEY")
 BASE_URL = os.getenv("OPENAI_BASE_URL")
 MODEL_NAME = os.getenv("OPENAI_MODEL_NAME")
 PROXY_URL = os.getenv("PROXY_URL")
-NOTIFIER_URL = os.getenv("NOTIFIER_URL")
 NTFY_TOPIC_URL = os.getenv("NTFY_TOPIC_URL")
 GOTIFY_URL = os.getenv("GOTIFY_URL")
 GOTIFY_TOKEN = os.getenv("GOTIFY_TOKEN")
@@ -91,31 +90,11 @@ def get_ai_request_params(**kwargs):
     """
     构建AI请求参数，根据ENABLE_THINKING和ENABLE_RESPONSE_FORMAT环境变量决定是否添加相应参数
     """
-    params = kwargs.copy()
-    
     if ENABLE_THINKING:
-        params["extra_body"] = {"enable_thinking": False}
+        kwargs["extra_body"] = {"enable_thinking": False}
     
-    # 注意：在 ai_handler.py 中已经手动处理了 response_format，
-    # 并且针对 gpt-4o-mini 等模型做了特殊处理。
-    # 这里如果重复添加，可能会覆盖掉 ai_handler.py 中的逻辑，或者造成冲突。
-    # 最安全的做法是：如果 kwargs 中已经有了，就不覆盖；如果没有，才根据环境变量添加。
-    # if ENABLE_RESPONSE_FORMAT and "response_format" not in params:
-    #    params["response_format"] = {"type": "json_object"}
+    # 如果禁用response_format，则移除该参数
+    if not ENABLE_RESPONSE_FORMAT and "response_format" in kwargs:
+        del kwargs["response_format"]
     
-    # 如果有代理设置
-    if PROXY_URL:
-        import httpx
-        params["http_client"] = httpx.AsyncClient(proxy=PROXY_URL)
-    
-    # 过滤掉不支持的参数
-    if "http_client" in params:
-        del params["http_client"]
-
-    # 针对 Gemini 等模型，如果不支持 response_format="json_object"，则移除该参数
-    # 或者如果 response_format 导致 400 错误，可以在这里进行特殊处理
-    # 目前 gemai.cc 的 [福利]gemini-3-flash-preview 是支持 json_object 的，但为了稳妥，
-    # 我们可以通过 MODEL_NAME 来判断是否需要移除某些特定参数。
-    # 这里暂时保持原样，因为测试脚本通过了。
-    
-    return params
+    return kwargs

@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import requests
-import apprise
 
 # 设置标准输出编码为UTF-8，解决Windows控制台编码问题
 if sys.platform.startswith('win'):
@@ -23,7 +22,6 @@ from src.config import (
     IMAGE_SAVE_DIR,
     TASK_IMAGE_DIR_PREFIX,
     MODEL_NAME,
-    NOTIFIER_URL,
     NTFY_TOPIC_URL,
     GOTIFY_URL,
     GOTIFY_TOKEN,
@@ -88,9 +86,6 @@ async def download_all_images(product_id, image_urls, task_name="default"):
 
     saved_paths = []
     total_images = len(urls)
-    
-    # 使用 asyncio.gather 并发下载图片
-    tasks = []
     for i, url in enumerate(urls):
         try:
             clean_url = url.split('.heic')[0] if '.heic' in url else url
@@ -101,41 +96,19 @@ async def download_all_images(product_id, image_urls, task_name="default"):
                 file_name += ".jpg"
 
             save_path = os.path.join(task_image_dir, file_name)
-            
-            # 如果图片已存在，直接添加到结果列表，不重复下载
+
             if os.path.exists(save_path):
                 safe_print(f"   [图片] 图片 {i + 1}/{total_images} 已存在，跳过下载: {os.path.basename(save_path)}")
                 saved_paths.append(save_path)
                 continue
-                
-            tasks.append((i, url, save_path))
-        except Exception as e:
-            safe_print(f"   [图片] 准备下载任务 {url} 时发生错误: {e}")
 
-    if not tasks:
-        return saved_paths
-
-    async def download_worker(index, url, path):
-        try:
-            safe_print(f"   [图片] 正在下载图片 {index + 1}/{total_images}: {url}")
-            if await _download_single_image(url, path):
-                safe_print(f"   [图片] 图片 {index + 1}/{total_images} 已成功下载到: {os.path.basename(path)}")
-                return path
+            safe_print(f"   [图片] 正在下载图片 {i + 1}/{total_images}: {url}")
+            if await _download_single_image(url, save_path):
+                safe_print(f"   [图片] 图片 {i + 1}/{total_images} 已成功下载到: {os.path.basename(save_path)}")
+                saved_paths.append(save_path)
         except Exception as e:
             safe_print(f"   [图片] 处理图片 {url} 时发生错误，已跳过此图: {e}")
-        return None
 
-    # 并发执行所有下载任务
-    results = await asyncio.gather(*(download_worker(i, url, path) for i, url, path in tasks))
-    
-    # 收集成功下载的路径
-    for path in results:
-        if path:
-            saved_paths.append(path)
-
-    # 按照原始URL顺序排序（虽然gather结果已经是顺序的，但为了保险起见）
-    # 这里不需要额外排序，因为gather保持了输入顺序
-    
     return saved_paths
 
 
@@ -169,41 +142,14 @@ def cleanup_ai_logs(logs_dir: str, keep_days: int = 1) -> None:
 
 
 def encode_image_to_base64(image_path):
-    """将本地图片文件编码为 Base64 字符串。支持自动缩放以节省 Token。"""
+    """将本地图片文件编码为 Base64 字符串。"""
     if not image_path or not os.path.exists(image_path):
         return None
     try:
-        from PIL import Image
-        import io
-
-        with Image.open(image_path) as img:
-            # 转换为RGB（处理PNG透明通道）
-            if img.mode in ('RGBA', 'P'):
-                img = img.convert('RGB')
-            
-            # 调整图片大小，最大边长限制为 800 (足以满足OCR和基本识别，且大幅减少Token)
-            max_size = 800
-            if max(img.size) > max_size:
-                ratio = max_size / max(img.size)
-                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
-            
-            # 保存为JPEG字节流
-            buffered = io.BytesIO()
-            img.save(buffered, format="JPEG", quality=80)
-            return base64.b64encode(buffered.getvalue()).decode('utf-8')
-            
-    except ImportError:
-        # Fallback if PIL is not installed
-        safe_print("   [警告] PIL未安装，无法压缩图片，将使用原始大小。")
-        try:
-            with open(image_path, "rb") as image_file:
-                return base64.b64encode(image_file.read()).decode('utf-8')
-        except Exception as e:
-            safe_print(f"编码图片时出错: {e}")
-            return None
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
     except Exception as e:
-        safe_print(f"处理图片时出错: {e}")
+        safe_print(f"编码图片时出错: {e}")
         return None
 
 
@@ -248,56 +194,9 @@ def validate_ai_response_format(parsed_response):
 
 @retry_on_failure(retries=3, delay=5)
 async def send_ntfy_notification(product_data, reason):
-    """当发现推荐商品时，异步发送通知。支持 Apprise (推荐) 及旧版原生集成。"""
-    
-    # --- 优先使用 Apprise (支持 NOTIFIER_URL) ---
-    if NOTIFIER_URL:
-        try:
-            safe_print(f"   -> 正在使用 Apprise 发送通知 (URL: {NOTIFIER_URL[:15]}...)")
-            
-            title = product_data.get('商品标题', 'N/A')
-            price = product_data.get('当前售价', 'N/A')
-            link = product_data.get('商品链接', '#')
-            
-            if PCURL_TO_MOBILE:
-                mobile_link = convert_goofish_link(link)
-                message = f"价格: {price}\n原因: {reason}\n手机端链接: {mobile_link}\n电脑端链接: {link}"
-            else:
-                message = f"价格: {price}\n原因: {reason}\n链接: {link}"
-            
-            notification_title = f"🚨 新推荐! {title[:30]}..."
-            
-            apobj = apprise.Apprise()
-            
-            # 特殊处理钉钉 webhook (Apprise 需要 dingtalk://token 格式)
-            url_to_use = NOTIFIER_URL
-            if "oapi.dingtalk.com" in NOTIFIER_URL and "access_token=" in NOTIFIER_URL:
-                try:
-                    token = NOTIFIER_URL.split("access_token=")[1].split("&")[0]
-                    url_to_use = f"dingtalk://{token}"
-                    safe_print(f"   -> 已自动转换钉钉 Webhook 为 Apprise 格式")
-                except IndexError:
-                    safe_print("   -> 钉钉 URL 格式解析失败，将尝试直接使用")
-            
-            apobj.add(url_to_use)
-            
-            # Apprise 的 async_notify 并不是完全非阻塞的，但在 asyncio 中运行良好
-            result = await apobj.async_notify(
-                body=message,
-                title=notification_title,
-            )
-            
-            if result:
-                safe_print("   -> Apprise 通知发送成功。")
-            else:
-                safe_print("   -> Apprise 通知发送失败。")
-                
-        except Exception as e:
-            safe_print(f"   -> Apprise 发送通知时出错: {e}")
-
-    # --- 兼容旧版配置 ---
-    if not NTFY_TOPIC_URL and not WX_BOT_URL and not (GOTIFY_URL and GOTIFY_TOKEN) and not BARK_URL and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID) and not WEBHOOK_URL and not NOTIFIER_URL:
-        safe_print("警告：未在 .env 文件中配置任何通知服务，跳过通知。")
+    """当发现推荐商品时，异步发送一个高优先级的 ntfy.sh 通知。"""
+    if not NTFY_TOPIC_URL and not WX_BOT_URL and not (GOTIFY_URL and GOTIFY_TOKEN) and not BARK_URL and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID) and not WEBHOOK_URL:
+        safe_print("警告：未在 .env 文件中配置任何通知服务 (NTFY_TOPIC_URL, WX_BOT_URL, GOTIFY_URL/TOKEN, BARK_URL, TELEGRAM_BOT_TOKEN/CHAT_ID, WEBHOOK_URL)，跳过通知。")
         return
 
     title = product_data.get('商品标题', 'N/A')
@@ -602,7 +501,11 @@ async def send_ntfy_notification(product_data, reason):
                 return
 
             response.raise_for_status()
-            safe_print(f"   -> Webhook 通知发送成功。状态码: {response.status_code}")
+            try:
+                resp_json = response.json()
+                safe_print(f"   -> Webhook 通知发送成功。状态码: {response.status_code}, 响应: {resp_json}")
+            except:
+                safe_print(f"   -> Webhook 通知发送成功。状态码: {response.status_code}, 响应: {response.text}")
 
         except requests.exceptions.RequestException as e:
             safe_print(f"   -> 发送 Webhook 通知失败: {e}")
@@ -710,19 +613,9 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
             }
             
             # 只有启用response_format时才添加该参数
-            # 注意：gpt-4o-mini 需要 strict=True 来强制输出 JSON，但 OpenAI Python SDK 某些版本可能不支持，这里先保持通用性
             if ENABLE_RESPONSE_FORMAT:
                 request_params["response_format"] = {"type": "json_object"}
             
-            # 强制添加提示词，要求返回 JSON
-            json_instruction = {"role": "system", "content": "You must output valid JSON only. Do not include any markdown formatting like ```json ... ```."}
-            # 将系统指令插入到 messages 列表的开头（如果是 gpt-4o-mini，它支持 developer/system 角色）
-            # 为了兼容性，我们把它作为第一条消息，或者追加到 user 消息之前
-            current_messages = [json_instruction] + messages
-
-            request_params["messages"] = current_messages
-            request_params["timeout"] = 120  # 显式增加超时时间到120秒
-
             response = await client.chat.completions.create(
                 **get_ai_request_params(**request_params)
             )
@@ -737,10 +630,7 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
             if AI_DEBUG_MODE:
                 safe_print(f"\n--- [AI DEBUG] 第{attempt + 1}次尝试 ---")
                 safe_print("--- RAW AI RESPONSE ---")
-                try:
-                    safe_print(str(ai_response_content))
-                except Exception as e:
-                    safe_print(f"[无法打印响应内容: {e}]")
+                safe_print(ai_response_content)
                 safe_print("---------------------\n")
 
             # 尝试直接解析JSON
@@ -760,14 +650,7 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
                         safe_print("   [AI分析] 所有重试完成，使用最后一次结果")
                         return parsed_response
 
-            except json.JSONDecodeError as e:
-                # 强制打印错误现场，不管 debug 模式是否开启
-                safe_print(f"\n!!! JSON解析异常现场 !!!")
-                safe_print(f"错误信息: {e}")
-                safe_print(f"原始内容预览(前500字符): {ai_response_content[:500]!r}")
-                safe_print(f"原始内容长度: {len(ai_response_content)}")
-                safe_print("!!! ---------------- !!!\n")
-
+            except json.JSONDecodeError:
                 safe_print(f"   [AI分析] 第{attempt + 1}次尝试JSON解析失败，尝试清理响应内容...")
 
                 # 清理可能的Markdown代码块标记
@@ -814,27 +697,6 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
                         raise json.JSONDecodeError("No valid JSON object found", ai_response_content, 0)
 
         except Exception as e:
-            error_str = str(e)
-            # 打印详细的错误信息，包括响应体
-            safe_print(f"   [AI分析] 第{attempt + 1}次尝试AI调用失败: {error_str}")
-            if hasattr(e, 'response') and hasattr(e.response, 'text'):
-                safe_print(f"   [AI分析] 错误响应详情: {e.response.text}")
-            if hasattr(e, 'body'):
-                safe_print(f"   [AI分析] 错误Body详情: {e.body}")
-
-            if "not a VLM" in error_str or "20041" in error_str:
-                safe_print(f"   [AI分析] ⚠️ 检测到模型不支持图片输入，正在自动切换到纯文本模式重试...")
-                # Remove image content from messages
-                new_messages = []
-                for msg in messages:
-                    if isinstance(msg.get("content"), list):
-                        new_content = [c for c in msg.get("content", []) if c.get("type") == "text"]
-                        new_messages.append({"role": msg.get("role"), "content": new_content})
-                    else:
-                        new_messages.append(msg)
-                messages = new_messages
-                # The next retry loop will use the updated messages
-            
             safe_print(f"   [AI分析] 第{attempt + 1}次尝试AI调用失败: {e}")
             if attempt < max_retries - 1:
                 safe_print(f"   [AI分析] 准备第{attempt + 2}次重试...")
