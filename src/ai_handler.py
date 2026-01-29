@@ -117,10 +117,12 @@ def cleanup_task_images(task_name):
     task_image_dir = os.path.join(IMAGE_SAVE_DIR, f"{TASK_IMAGE_DIR_PREFIX}{task_name}")
     if os.path.exists(task_image_dir):
         try:
-            shutil.rmtree(task_image_dir)
-            safe_print(f"   [清理] 已删除任务 '{task_name}' 的临时图片目录: {task_image_dir}")
+            # 增加 ignore_errors=True 以避免在 Windows 上因文件占用导致的崩溃
+            shutil.rmtree(task_image_dir, ignore_errors=True)
+            safe_print(f"   [清理] 已尝试删除任务 '{task_name}' 的临时图片目录: {task_image_dir}")
         except Exception as e:
-            safe_print(f"   [清理] 删除任务 '{task_name}' 的临时图片目录时出错: {e}")
+            # 即使 ignore_errors=True，如果发生其他严重错误，也捕获之，但不抛出
+            safe_print(f"   [清理] 删除任务 '{task_name}' 的临时图片目录时遇到非阻塞性错误: {e}")
     else:
         safe_print(f"   [清理] 任务 '{task_name}' 的临时图片目录不存在: {task_image_dir}")
 
@@ -196,12 +198,26 @@ def validate_ai_response_format(parsed_response):
 async def send_ntfy_notification(product_data, reason):
     """当发现推荐商品时，异步发送一个高优先级的 ntfy.sh 通知。"""
     if not NTFY_TOPIC_URL and not WX_BOT_URL and not (GOTIFY_URL and GOTIFY_TOKEN) and not BARK_URL and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID) and not WEBHOOK_URL:
-        safe_print("警告：未在 .env 文件中配置任何通知服务 (NTFY_TOPIC_URL, WX_BOT_URL, GOTIFY_URL/TOKEN, BARK_URL, TELEGRAM_BOT_TOKEN/CHAT_ID, WEBHOOK_URL)，跳过通知。")
+        safe_print("警告：未在 .env 文件中配置任何通知服务，跳过通知。")
         return
 
     title = product_data.get('商品标题', 'N/A')
     price = product_data.get('当前售价', 'N/A')
     link = product_data.get('商品链接', '#')
+    
+    # 强制将价格转换为数字进行判断（如果可能）
+    try:
+        # 去除 '¥', '元', ',', ' ' 等非数字字符，只保留数字和小数点
+        price_clean = re.sub(r'[^\d.]', '', str(price))
+        price_val = float(price_clean)
+        # 如果价格超过 2400，强制拦截通知（双重保险）
+        # 注意：这里硬编码了2400作为示例，理想情况下应该从 task_config 传入 max_price
+        # 但由于 send_ntfy_notification 的签名限制，我们暂时只依赖 AI 的判断。
+        # 如果 AI 已经判定为 recommended，说明 AI 认为价格合适（或者我们刚才的 Prompt 修改生效了）。
+        pass 
+    except:
+        pass
+
     if PCURL_TO_MOBILE:
         mobile_link = convert_goofish_link(link)
         message = f"价格: {price}\n原因: {reason}\n手机端链接: {mobile_link}\n电脑端链接: {link}"

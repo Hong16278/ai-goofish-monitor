@@ -233,8 +233,8 @@ async def scrape_user_profile(context, user_id: str) -> dict:
 
     try:
         # --- 任务1: 导航并采集头部信息 ---
-        await page.goto(f"https://www.goofish.com/personal?userId={user_id}", wait_until="domcontentloaded", timeout=20000)
-        head_data = await asyncio.wait_for(head_api_future, timeout=15)
+        await page.goto(f"https://www.goofish.com/personal?userId={user_id}", wait_until="domcontentloaded", timeout=60000)
+        head_data = await asyncio.wait_for(head_api_future, timeout=20)
         profile_data = await parse_user_head_data(head_data)
 
         # --- 任务2: 滚动加载所有商品 (默认页面) ---
@@ -442,7 +442,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             try:
                 # 步骤 0 - 模拟真实用户：先访问首页（重要的反检测措施）
                 log_time("步骤 0 - 模拟真实用户访问首页...")
-                await page.goto("https://www.goofish.com/", wait_until="domcontentloaded", timeout=30000)
+                await page.goto("https://www.goofish.com/", wait_until="domcontentloaded", timeout=60000)
                 log_time("[反爬] 在首页停留，模拟浏览...")
                 await random_sleep(1, 2)
 
@@ -457,13 +457,13 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 log_time(f"目标URL: {search_url}")
 
                 # 使用 expect_response 在导航的同时捕获初始搜索的API数据
-                async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=30000) as response_info:
+                async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=60000) as response_info:
                     await page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
 
                 initial_response = await response_info.value
 
                 # 等待页面加载出关键筛选元素，以确认已成功进入搜索结果页
-                await page.wait_for_selector('text=新发布', timeout=15000)
+                await page.wait_for_selector('text=新发布', timeout=30000)
 
                 # 模拟真实用户行为：页面加载后的初始停留和浏览
                 log_time("[反爬] 模拟用户查看页面...")
@@ -517,32 +517,36 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 if new_publish_option:
                     try:
                         await page.click('text=新发布')
-                        await random_sleep(1, 2) # 原来是 (1.5, 2.5)
-                        async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=20000) as response_info:
-                            await page.click(f"text={new_publish_option}")
-                            # --- 修改: 增加排序后的等待时间 ---
-                            await random_sleep(2, 4) # 原来是 (3, 5)
-                        final_response = await response_info.value
-                    except PlaywrightTimeoutError:
-                        log_time(f"新发布筛选 '{new_publish_option}' 请求超时，继续执行。")
+                        await random_sleep(1, 2)
+                        # 使用更宽泛的等待策略：如果不响应，打印警告但继续
+                        try:
+                            async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=90000) as response_info:
+                                await page.click(f"text={new_publish_option}")
+                                await random_sleep(2, 4)
+                            final_response = await response_info.value
+                        except PlaywrightTimeoutError:
+                            log_time(f"警告：新发布筛选 '{new_publish_option}' 请求超时，但将尝试继续执行。")
                     except Exception as e:
                         print(f"LOG: 应用新发布筛选失败: {e}")
 
                 if personal_only:
-                    async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=20000) as response_info:
-                        await page.click('text=个人闲置')
-                        # --- 修改: 将固定等待改为随机等待，并加长 ---
-                        await random_sleep(2, 4) # 原来是 asyncio.sleep(5)
-                    final_response = await response_info.value
+                    try:
+                        # 尝试捕获筛选点击的响应，如果超时则忽略
+                        async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=90000) as response_info:
+                            await page.click('text=个人闲置')
+                            await random_sleep(2, 4)
+                        final_response = await response_info.value
+                    except PlaywrightTimeoutError:
+                         log_time("警告：'个人闲置'筛选请求超时，但将尝试继续执行。")
 
                 if free_shipping:
                     try:
-                        async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=20000) as response_info:
+                        async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=90000) as response_info:
                             await page.click('text=包邮')
                             await random_sleep(2, 4)
                         final_response = await response_info.value
                     except PlaywrightTimeoutError:
-                        log_time("包邮筛选请求超时，继续执行。")
+                        log_time("警告：'包邮'筛选请求超时，但将尝试继续执行。")
                     except Exception as e:
                         print(f"LOG: 应用包邮筛选失败: {e}")
 
@@ -599,12 +603,12 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                             search_btn = popover.locator("div.searchBtn--Ic6RKcAb").first
                             if await search_btn.count():
                                 try:
-                                    async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=20000) as response_info:
+                                    async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=90000) as response_info:
                                         await search_btn.click()
                                         await random_sleep(2, 3)
                                     final_response = await response_info.value
                                 except PlaywrightTimeoutError:
-                                    log_time("区域筛选提交超时，继续执行。")
+                                    log_time("警告：区域筛选提交超时，但将尝试继续执行。")
                             else:
                                 print("LOG: 未找到区域弹窗的“查看XX件宝贝”按钮，跳过提交。")
                         else:
@@ -626,11 +630,22 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                             # --- 修改: 将固定等待改为随机等待 ---
                             await random_sleep(1, 2.5) # 原来是 asyncio.sleep(5)
 
-                        async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=20000) as response_info:
-                            await page.keyboard.press('Tab')
-                            # --- 修改: 增加确认价格后的等待时间 ---
-                            await random_sleep(2, 4) # 原来是 asyncio.sleep(5)
-                        final_response = await response_info.value
+                        try:
+                            async with page.expect_response(lambda r: API_URL_PATTERN in r.url, timeout=90000) as response_info:
+                                # 尝试点击“确定”按钮
+                                confirm_btn = price_container.locator("button.search-price-confirm-btn")
+                                if await confirm_btn.count() > 0 and await confirm_btn.is_visible():
+                                    await confirm_btn.click()
+                                else:
+                                    # 备用方案：回车键
+                                    await page.keyboard.press('Enter')
+                                
+                                # --- 修改: 增加确认价格后的等待时间 ---
+                                await random_sleep(2, 4) # 原来是 asyncio.sleep(5)
+                            final_response = await response_info.value
+                        except PlaywrightTimeoutError:
+                             log_time("警告：价格筛选提交超时，但将尝试继续执行。")
+
                     else:
                         print("LOG: 警告 - 未找到价格输入容器。")
 
@@ -684,8 +699,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
                         detail_page = await context.new_page()
                         try:
-                            async with detail_page.expect_response(lambda r: DETAIL_API_URL_PATTERN in r.url, timeout=25000) as detail_info:
-                                await detail_page.goto(item_data["商品链接"], wait_until="domcontentloaded", timeout=25000)
+                            async with detail_page.expect_response(lambda r: DETAIL_API_URL_PATTERN in r.url, timeout=60000) as detail_info:
+                                await detail_page.goto(item_data["商品链接"], wait_until="domcontentloaded", timeout=60000)
 
                             detail_response = await detail_info.value
                             if detail_response.ok:
